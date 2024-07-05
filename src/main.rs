@@ -3,18 +3,19 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::io::{self, Write};
 use std::time::SystemTime;
 
-use std::io::{self, BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read};
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct Message {
     src: Option<String>,
     dest: String,
     body: MessageBody,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 enum MessageBody {
     Init(InitBody),
@@ -25,7 +26,7 @@ enum MessageBody {
     Generate(GenerateBody),
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct InitBody {
     #[serde(rename(serialize = "type", deserialize = "type"))]
     r#type: String,
@@ -34,7 +35,7 @@ struct InitBody {
     node_ids: Option<Vec<String>>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct EchoBody {
     #[serde(rename(serialize = "type", deserialize = "type"))]
     r#type: String,
@@ -43,14 +44,14 @@ struct EchoBody {
     echo: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct GenerateBody {
     #[serde(rename(serialize = "type", deserialize = "type"))]
     r#type: String,
     msg_id: u32,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct BroadcastBody {
     #[serde(rename(serialize = "type", deserialize = "type"))]
     r#type: String,
@@ -59,14 +60,14 @@ struct BroadcastBody {
     in_reply_to: Option<u32>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct ReadBody {
     #[serde(rename(serialize = "type", deserialize = "type"))]
     r#type: String,
     msg_id: Option<u32>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct TopologyBody {
     r#type: String,
     topology: HashMap<String, Vec<String>>,
@@ -420,8 +421,6 @@ impl Node {
         input: &mut impl BufRead,
         output: &mut String,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        use std::io::{self, Write};
-
         loop {
             let _ = input.read_line(output);
 
@@ -462,20 +461,7 @@ impl Node {
         }
 
         if let MessageBody::Broadcast(body) = &message.body {
-            let body_clone = body.clone();
-
-            self.messages.insert(body.message);
-
-            // Add a callback for the message, using the message id as the key.
-            self.response_callbacks.insert(
-                body_clone.msg_id.unwrap(),
-                ResponseCallback(Box::new(move || {
-                    eprintln!(
-                        "Callback invoked for msg: {}",
-                        body_clone.clone().msg_id.unwrap()
-                    );
-                })),
-            );
+            let is_message_seen = self.messages.contains(&body.message);
 
             if body.in_reply_to.is_some() {
                 if let Some(response_callback) =
@@ -483,6 +469,55 @@ impl Node {
                 {
                     let ResponseCallback(callback) = response_callback;
                     callback()
+                }
+            }
+
+            if !is_message_seen {
+                self.messages.insert(body.message);
+
+                // Broadcast the message to every known node, expect to itself, and the one that sent the message.
+                for (node_id, neighbors) in self.topology.clone().iter() {
+                    if *node_id != self.id.clone().unwrap() {
+                        continue;
+                    }
+
+                    for neighbor in neighbors {
+                        let stdout = io::stdout();
+                        let mut lock = stdout.lock();
+
+                        let next_message_id = self.next_message_id();
+                        let body_clone = body.clone();
+
+                        let message = Message {
+                            src: self.id.clone(),
+                            dest: neighbor.to_owned(),
+                            body: MessageBody::Broadcast(BroadcastBody {
+                                r#type: "broadcast".to_owned(),
+                                msg_id: Some(next_message_id),
+                                in_reply_to: None,
+                                message: body_clone.message,
+                            }),
+                        };
+
+                        // Flush the message to stdout.
+                        writeln!(
+                            lock,
+                            "{}",
+                            serde_json::to_string(&message).expect("Couldn't parse message.")
+                        )
+                        .unwrap();
+
+                        // Add a callback for the message, using the message id as the key.
+                        self.response_callbacks.insert(
+                            next_message_id,
+                            ResponseCallback(Box::new(move || {
+                                eprintln!(
+                                    "Callback invoked for msg: {}",
+                                    body_clone.msg_id.unwrap()
+                                );
+                            })),
+                        );
+                    }
                 }
             }
         }
@@ -566,7 +601,9 @@ mod test {
         };
 
         let mut message =
-            r#"{"id": 100000, "src": "c1", "dest": "n3", "body": {"type": "broadcast", "message": 1000, "msg_id": 1 }}"#.as_bytes();
+            r#"{"id": 508799, "src": "c1", "dest": "n3", "body": {"type": "init", "msg_id": 1, "in_reply_to": null, "node_id": "n1", "node_ids": ["n1", "n2", "n3"]}}
+            {"id": 100000, "src": "c1", "dest": "n3", "body": {"type": "topology", "msg_id": 1, "topology": { "n1": ["n2", "n3"], "n2": ["n1"], "n3": ["n1"] } }}
+            {"id": 100000, "src": "c1", "dest": "n3", "body": {"type": "broadcast", "message": 1000, "msg_id": 1 }}"#.as_bytes();
 
         let _ = node.run(&mut message, &mut buffer);
     }
