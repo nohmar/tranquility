@@ -201,7 +201,7 @@ struct InvalidResponse {
 struct Node {
     id: Option<String>,
     messages: HashSet<u32>,
-    topology: HashMap<String, Vec<String>>,
+    topology: Vec<String>,
     current_message_id: u32,
     response_callbacks: HashMap<u32, ResponseCallback>,
 }
@@ -438,56 +438,58 @@ impl MessageKind {
                         node.messages.insert(body.message);
 
                         // Broadcast the message to every known node, expect to itself, and the one that sent the message.
-                        for (node_id, neighbors) in node.topology.clone().iter() {
-                            if *node_id != node.id.clone().unwrap() {
+                        for node_id in node.topology.clone().iter() {
+                            if *node_id == message.src.clone().unwrap() {
                                 continue;
                             }
 
-                            for neighbor in neighbors {
-                                let stdout = io::stdout();
-                                let mut lock = stdout.lock();
+                            let stdout = io::stdout();
+                            let mut lock = stdout.lock();
 
-                                let next_message_id = node.next_message_id();
-                                let body_clone = body.clone();
+                            let next_message_id = node.next_message_id();
+                            let body_clone = body.clone();
 
-                                let message = Message {
-                                    src: node.id.clone(),
-                                    dest: neighbor.to_owned(),
-                                    body: MessageBody::Broadcast(BroadcastBody {
-                                        r#type: "broadcast".to_owned(),
-                                        msg_id: Some(next_message_id),
-                                        in_reply_to: None,
-                                        message: body_clone.message,
-                                    }),
-                                };
+                            let message = Message {
+                                src: node.id.clone(),
+                                dest: node_id.to_owned(),
+                                body: MessageBody::Broadcast(BroadcastBody {
+                                    r#type: "broadcast".to_owned(),
+                                    msg_id: Some(next_message_id),
+                                    in_reply_to: None,
+                                    message: body_clone.message,
+                                }),
+                            };
 
-                                // Flush the message to stdout.
-                                writeln!(
-                                    lock,
-                                    "{}",
-                                    serde_json::to_string(&message)
-                                        .expect("Couldn't parse message.")
-                                )
-                                .unwrap();
+                            // Flush the message to stdout.
+                            writeln!(
+                                lock,
+                                "{}",
+                                serde_json::to_string(&message).expect("Couldn't parse message.")
+                            )
+                            .unwrap();
 
-                                // Add a callback for the message, using the message id as the key.
-                                node.response_callbacks.insert(
-                                    next_message_id,
-                                    ResponseCallback(Box::new(move || {
-                                        eprintln!(
-                                            "Callback invoked for msg: {}",
-                                            body_clone.msg_id.unwrap()
-                                        );
-                                    })),
-                                );
-                            }
+                            // Add a callback for the message, using the message id as the key.
+                            node.response_callbacks.insert(
+                                next_message_id,
+                                ResponseCallback(Box::new(move || {
+                                    eprintln!(
+                                        "Callback invoked for msg: {}",
+                                        body_clone.msg_id.unwrap()
+                                    );
+                                })),
+                            );
                         }
                     }
                 }
             }
             MessageKind::Topology(message) => {
                 if let MessageBody::Topology(body) = &message.body {
-                    node.topology = body.topology.to_owned();
+                    let body_topology = body.topology.to_owned();
+                    let node_id = node.id.to_owned().unwrap();
+
+                    if let Some(topology) = body_topology.get(&node_id) {
+                        node.topology = topology.to_vec();
+                    }
                 }
             }
             MessageKind::Read(_message) => (),
