@@ -243,21 +243,21 @@ impl Message {
 }
 
 impl MessageKind {
-    fn generate_response(self, node: &mut Node) -> (Response, Message) {
+    fn generate_response(self, node: &mut Node) -> Option<(Response, Message)> {
         return match self {
             MessageKind::Init(message) => {
                 let MessageBody::Init(body) = &message.body else {
-                    return (
+                    return Some((
                         Response::Invalid(InvalidResponse {
                             src: node.id.clone(),
                             dest: message.clone().src.unwrap().to_owned(),
                             body: "There was an error.".to_string(),
                         }),
                         message,
-                    );
+                    ));
                 };
 
-                (
+                Some((
                     Response::InitOk(InitOkResponse {
                         body: InitOkBody {
                             msg_id: Some(node.next_message_id()),
@@ -268,21 +268,21 @@ impl MessageKind {
                         dest: message.clone().src.unwrap().to_owned(),
                     }),
                     message,
-                )
+                ))
             }
             MessageKind::Echo(message) => {
                 let MessageBody::Echo(body) = &message.body else {
-                    return (
+                    return Some((
                         Response::Invalid(InvalidResponse {
                             src: node.id.clone(),
                             dest: message.clone().src.unwrap().to_owned(),
                             body: "There was an error.".to_string(),
                         }),
                         message,
-                    );
+                    ));
                 };
 
-                (
+                Some((
                     Response::EchoOk(EchoOkResponse {
                         src: node.id.clone(),
                         dest: message.clone().src.unwrap().to_owned(),
@@ -294,21 +294,21 @@ impl MessageKind {
                         },
                     }),
                     message,
-                )
+                ))
             }
             MessageKind::Generate(message) => {
                 let MessageBody::Generate(body) = &message.body else {
-                    return (
+                    return Some((
                         Response::Invalid(InvalidResponse {
                             src: node.id.clone(),
                             dest: message.clone().src.unwrap().to_owned(),
                             body: "There was an error.".to_string(),
                         }),
                         message,
-                    );
+                    ));
                 };
 
-                (
+                Some((
                     Response::GenerateOk(GenerateOkResponse {
                         src: node.id.clone(),
                         dest: message.clone().src.unwrap().to_owned(),
@@ -325,21 +325,21 @@ impl MessageKind {
                         },
                     }),
                     message,
-                )
+                ))
             }
             MessageKind::Broadcast(message) => {
                 let MessageBody::Broadcast(body) = &message.body else {
-                    return (
+                    return Some((
                         Response::Invalid(InvalidResponse {
                             src: node.id.clone(),
                             dest: message.clone().src.unwrap().to_owned(),
                             body: "There was an error.".to_string(),
                         }),
                         message,
-                    );
+                    ));
                 };
 
-                (
+                Some((
                     Response::BroadcastOk(BroadcastOkResponse {
                         src: node.id.clone(),
                         dest: message.clone().src.unwrap().to_owned(),
@@ -350,21 +350,22 @@ impl MessageKind {
                         },
                     }),
                     message,
-                )
+                ))
             }
             MessageKind::Read(message) => {
                 let MessageBody::Read(body) = &message.body else {
-                    return (
+                    return Some((
                         Response::Invalid(InvalidResponse {
                             src: node.id.clone(),
                             dest: message.clone().src.unwrap().to_owned(),
                             body: "There was an error.".to_string(),
                         }),
                         message,
-                    );
+                    ));
                 };
 
-                (
+
+                Some((
                     Response::ReadOk(ReadOkResponse {
                         src: node.id.clone(),
                         dest: message.clone().src.unwrap().to_owned(),
@@ -376,21 +377,21 @@ impl MessageKind {
                         },
                     }),
                     message,
-                )
+                ))
             }
             MessageKind::Topology(message) => {
                 let MessageBody::Topology(body) = &message.body else {
-                    return (
+                    return Some((
                         Response::Invalid(InvalidResponse {
                             src: node.id.clone(),
                             dest: message.clone().src.unwrap().to_owned(),
                             body: "There was an error.".to_string(),
                         }),
                         message,
-                    );
+                    ));
                 };
 
-                (
+                Some((
                     Response::TopologyOk(TopologyOkResponse {
                         src: node.id.clone(),
                         dest: message.clone().src.unwrap().to_owned(),
@@ -401,16 +402,16 @@ impl MessageKind {
                         },
                     }),
                     message,
-                )
+                ))
             }
-            MessageKind::Invalid(message) => (
+            MessageKind::Invalid(message) => Some((
                 Response::Invalid(InvalidResponse {
                     src: node.id.clone(),
                     dest: message.clone().src.unwrap().to_owned(),
                     body: "There was an error.".to_string(),
                 }),
                 message,
-            ),
+            )),
         };
     }
 
@@ -514,25 +515,26 @@ impl Node {
             let message = Message::new(serialized_message);
             message.run_callback(self);
 
-            let (response, _original_message) = message.generate_response(self);
 
-            let stdout = io::stdout();
-            let mut lock = stdout.lock();
+            if let Some((response, _original_message)) = message.generate_response(self) {
+                let stdout = io::stdout();
+                let mut lock = stdout.lock();
 
-            writeln!(
-                lock,
-                "{}",
-                serde_json::to_string(&response).expect("Couldn't parse response.")
-            )
-            .unwrap();
+                writeln!(
+                    lock,
+                    "{}",
+                    serde_json::to_string(&response).expect("Couldn't parse response.")
+                )
+                .unwrap();
 
-            // Log results to stderr:
-            /*eprintln!(
-             *    "Received: {}, Processed: {}",
-             *    output.clone(),
-             *    serde_json::to_string(&response).unwrap()
-             *);
-             */
+                // Log results to stderr:
+                /*eprintln!(
+                 *    "Received: {}, Processed: {}",
+                 *    output.clone(),
+                 *    serde_json::to_string(&response).unwrap()
+                 *);
+                 */
+            }
 
             // Flush all buffers
             output.clear();
