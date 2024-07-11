@@ -364,6 +364,9 @@ impl MessageKind {
                     ));
                 };
 
+                if body.r#type != "read" {
+                    return None;
+                }
 
                 Some((
                     Response::ReadOk(ReadOkResponse {
