@@ -1,8 +1,10 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::io::BufRead;
 use std::io::{self, Write};
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
+use tokio::sync::mpsc::{Receiver, Sender};
+use tokio_util::task::TaskTracker;
 
 use crate::message::{BroadcastBody, Message, MessageBody, MessageKind};
 use serde::Serialize;
@@ -40,47 +42,67 @@ impl fmt::Debug for ResponseCallback {
 }
 
 impl Node {
-    pub fn run(
-        &mut self,
-        input: &mut impl BufRead,
-        output: &mut String,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        loop {
-            let _ = input.read_line(output);
+    pub async fn run(
+        node: Arc<Mutex<Node>>,
+        mut rx: Receiver<String>,
+        mut response_tx: Sender<String>,
+        task_tracker: &TaskTracker,
+    ) -> () {
+        // `recv()` keeps the `rx` alive because it doesn't drop the value by ending the
+        // execution of the thread. The thread is put to sleep until the channel is closed.
+        //
+        // You must explicitly drop `tx`, or close the thread after tracker.spawn() to close the
+        // channel, and break the loop.
+        while let Some(from_stdin) = rx.recv().await {
+            let response_reference = &mut response_tx;
 
-            let serialized_message: Message = serde_json::from_str(&output)?;
-            let next_message_id = self.next_message_id();
+            // NOTE: node_clone must occur in the `while` loop (not outside of it), else the borrow checker
+            // complains because the spawned thread takes ownership of it.
+            //
+            // You can't clone in the spawned thread because the thread will own `node`.
+            let node_clone = node.clone();
 
-            let message = Message::new(serialized_message);
+            let result = task_tracker.spawn(async move {
+                let mut locked = node_clone.lock().unwrap();
 
-            self.run_callback(&message, next_message_id);
+                let Ok(serialized_message) = serde_json::from_str(&from_stdin) else {
+                    return Err("Uh-oh, unable to parse that message.".to_string());
+                };
 
-            if let Some((response, _original_message)) =
-                message.generate_response(self, next_message_id)
-            {
-                let stdout = io::stdout();
-                let mut lock = stdout.lock();
+                let id = locked.next_message_id();
+                let message = Message::new(serialized_message);
 
-                writeln!(
-                    lock,
-                    "{}",
-                    serde_json::to_string(&response).expect("Couldn't parse response.")
-                )
-                .unwrap();
+                locked.run_callback(&message, id);
 
-                // Log results to stderr:
-                /*eprintln!(
-                 *    "Received: {}, Processed: {}",
-                 *    output.clone(),
-                 *    serde_json::to_string(&response).unwrap()
-                 *);
-                 */
+                if let Some((response, _original_message)) = message.generate_response(&locked, id)
+                {
+                    let stringified_response =
+                        serde_json::to_string(&response).expect("Couldn't parse response.");
+
+                    return Ok(Some(stringified_response));
+                }
+
+                Ok(None)
+            });
+
+            if let Ok(inner) = result.await {
+                match inner {
+                    Ok(message) => {
+                        if let Some(unwrapped_message) = message {
+                            response_reference
+                                .send(unwrapped_message)
+                                .await
+                                .expect("Could not send response.");
+                        }
+                    }
+                    Err(message) => {
+                        eprintln!("{}", message);
+                    }
+                }
             }
-
-            // Flush all buffers
-            output.clear();
-            io::stdout().flush()?;
         }
+
+        eprintln!("{}", "Shutting down...");
     }
 
     pub fn generate_uuid(&self, client_id: &String) -> u64 {
