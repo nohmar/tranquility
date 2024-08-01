@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::io::{self, Write};
 
-use crate::node::{Node, ResponseCallback};
+use crate::node::Node;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
