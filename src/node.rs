@@ -145,13 +145,14 @@ impl Node {
                                 }),
                             };
 
+                            let message =
+                                serde_json::to_string(&message).expect("Couldn't parse message.");
+
+                            // Log message to stderr.
+                            eprintln!("Sent {:?}", message);
+
                             // Flush the message to stdout.
-                            writeln!(
-                                lock,
-                                "{}",
-                                serde_json::to_string(&message).expect("Couldn't parse message.")
-                            )
-                            .unwrap();
+                            writeln!(lock, "{}", message).unwrap();
 
                             // Add a callback for the message, using the message id as the key.
                             self.response_callbacks.insert(
@@ -164,6 +165,9 @@ impl Node {
                                 })),
                             );
                         }
+                    } else {
+                        // Log message to stderr.
+                        eprintln!("Message seen {:?}, do nothing.", message);
                     }
                 }
             }
@@ -174,6 +178,8 @@ impl Node {
 
                     if let Some(topology) = body_topology.get(&node_id) {
                         self.topology = topology.to_vec();
+
+                        eprintln!("My neighbors are: {:?}", self.topology);
                     }
                 }
             }
