@@ -31,7 +31,7 @@ pub struct Node {
 }
 
 // Define the callback type and allow it to be displayed.
-pub struct ResponseCallback(pub Box<dyn Fn() + 'static>);
+pub struct ResponseCallback(pub Box<dyn Fn() + Send + Sync + 'static>);
 
 impl fmt::Debug for ResponseCallback {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
