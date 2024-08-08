@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io::{self, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::SystemTime;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::task::TaskTracker;
@@ -34,7 +34,7 @@ pub struct Node {
 }
 
 // Define the callback type and allow it to be displayed.
-pub struct ResponseCallback(pub Box<dyn Fn() + Send + Sync + 'static>);
+pub struct ResponseCallback(pub Box<dyn Fn(MutexGuard<Node>) + Send + Sync + 'static>);
 
 impl fmt::Debug for ResponseCallback {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -152,7 +152,7 @@ impl Node {
                         node.response_callbacks.remove(&body.in_reply_to)
                     {
                         let ResponseCallback(callback) = response_callback;
-                        callback();
+                        callback(node);
 
                         eprintln!("Broadcast Ok received for message: {:?}", body.in_reply_to);
                     } else {
@@ -167,60 +167,66 @@ impl Node {
                 if let MessageBody::Broadcast(body) = &message.body {
                     let is_message_seen = node.messages.contains(&body.message);
 
-                    if body.in_reply_to.is_some() {
-                        if let Some(response_callback) =
-                            self.response_callbacks.remove(&body.in_reply_to.unwrap())
-                        {
-                            let ResponseCallback(callback) = response_callback;
-                            callback()
-                        }
-                    }
-
                     if !is_message_seen {
-                        self.messages.insert(body.message);
+                        node.messages.insert(body.message);
 
-                        // Broadcast the message to every known node, expect to itself, and the one that sent the message.
-                        for node_id in self.topology.clone().iter() {
-                            if *node_id == message.src.clone().unwrap() {
-                                continue;
+                        // Generate message ID, and persist the message ID in the list of
+                        // unacknowledged messages before sending the first message.
+                        let mapped_messages = node
+                            .topology
+                            .clone()
+                            .into_iter()
+                            .filter_map(|node_id| {
+                                // Don't send the message back to the message's original src, even
+                                // if the src is a neighbor.
+                                if node_id == message.src.clone().unwrap() {
+                                    return None;
+                                }
+
+                                Some((node_id, node.next_message_id()))
+                            })
+                            .collect::<Vec<(String, u32)>>();
+
+                        // Store the message id's in the message list.
+                        for (_node_id, message_id) in mapped_messages.iter() {
+                            node.unacknowledged_messages
+                                .lock()
+                                .unwrap()
+                                .insert(*message_id);
+                        }
+
+                        let retry_node = mutex.clone();
+                        let body_clone = body.clone();
+
+                        // Spawn a thread to execute `Node::retry` method in a non-async function.
+                        // Calling `retry` asynchronously allows updates to unacknowledged_messages
+                        // in another thread to propogate without causing the `while` to block,
+                        // causing an infinite loop.
+                        //
+                        // NOTE: we are not `.await`ing the spawned thread; its possible the thread
+                        // is still processing messages after the main thread is closed.
+                        tokio::spawn(async move {
+                            while Node::retry(&retry_node) {
+                                let messages = Node::filter_messages(&retry_node, &mapped_messages);
+
+                                for (node_id, message_id) in messages.into_iter() {
+                                    Node::send_message(
+                                        &retry_node,
+                                        &body_clone,
+                                        node_id,
+                                        message_id,
+                                    );
+                                }
+
+                                // FIXME: Add a short delay before checking messages again. This
+                                // avoid blocking the thread with locks, causing net-timeouts.
+                                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+
+                                eprintln!("Messages sent. Waiting for acknowledgements...");
                             }
 
-                            let stdout = io::stdout();
-                            let mut lock = stdout.lock();
-
-                            let body_clone = body.clone();
-
-                            let message = Message {
-                                src: self.id.clone(),
-                                dest: node_id.to_owned(),
-                                body: MessageBody::Broadcast(BroadcastBody {
-                                    r#type: "broadcast".to_owned(),
-                                    msg_id: Some(next_message_id),
-                                    in_reply_to: None,
-                                    message: body_clone.message,
-                                }),
-                            };
-
-                            let message =
-                                serde_json::to_string(&message).expect("Couldn't parse message.");
-
-                            // Log message to stderr.
-                            eprintln!("Sent {:?}", message);
-
-                            // Flush the message to stdout.
-                            writeln!(lock, "{}", message).unwrap();
-
-                            // Add a callback for the message, using the message id as the key.
-                            self.response_callbacks.insert(
-                                next_message_id,
-                                ResponseCallback(Box::new(move || {
-                                    eprintln!(
-                                        "Callback invoked for msg: {}",
-                                        body_clone.msg_id.unwrap()
-                                    );
-                                })),
-                            );
-                        }
+                            eprintln!("Acknowledged all messages.");
+                        });
                     } else {
                         // Log message to stderr.
                         eprintln!(
@@ -255,5 +261,71 @@ impl Node {
 
         eprintln!("Unacknowledged messages: {:?}", messages);
         !messages.is_empty()
+    }
+
+    fn filter_messages(
+        node: &Arc<Mutex<Node>>,
+        mapped_messages: &Vec<(String, u32)>,
+    ) -> Vec<(String, u32)> {
+        let node = node.lock().unwrap();
+        let unacknowledged_messages = node.unacknowledged_messages.lock().unwrap();
+
+        mapped_messages
+            .clone()
+            .into_iter()
+            .filter_map(|message| {
+                let (_node_id, message_id) = &message;
+
+                if unacknowledged_messages.contains(&message_id) {
+                    Some(message)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn send_message(
+        node: &Arc<Mutex<Node>>,
+        body: &BroadcastBody,
+        node_id: String,
+        message_id: u32,
+    ) {
+        let mut node = node.lock().unwrap();
+        let stdout = io::stdout();
+        let mut lock = stdout.lock();
+
+        let message = Message {
+            src: node.id.clone(),
+            dest: node_id.to_owned(),
+            body: MessageBody::Broadcast(BroadcastBody {
+                r#type: "broadcast".to_owned(),
+                msg_id: Some(message_id),
+                in_reply_to: None,
+                message: body.message,
+            }),
+        };
+
+        let message = serde_json::to_string(&message).expect("Couldn't parse message.");
+
+        // Log message to stderr.
+        eprintln!("Sent {:?}", message);
+
+        // Flush the message to stdout.
+        writeln!(lock, "{}", message).unwrap();
+
+        if !node.response_callbacks.contains_key(&message_id) {
+            // Add a callback for the message, using the message id as the key.
+            node.response_callbacks.insert(
+                message_id,
+                ResponseCallback(Box::new(move |node| {
+                    let mut unlocked_messages = node.unacknowledged_messages.lock().unwrap();
+
+                    unlocked_messages.remove(&message_id);
+
+                    eprintln!("Callback invoked for msg: {:?}", message);
+                })),
+            );
+        }
     }
 }
