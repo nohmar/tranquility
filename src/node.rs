@@ -46,7 +46,7 @@ impl Node {
     pub async fn run(
         node: Arc<Mutex<Node>>,
         mut rx: Receiver<String>,
-        mut response_tx: Sender<String>,
+        response_tx: Sender<String>,
         task_tracker: &TaskTracker,
     ) -> () {
         // `recv()` keeps the `rx` alive because it doesn't drop the value by ending the
@@ -55,7 +55,7 @@ impl Node {
         // You must explicitly drop `tx`, or close the thread after tracker.spawn() to close the
         // channel, and break the loop.
         while let Some(from_stdin) = rx.recv().await {
-            let response_reference = &mut response_tx;
+            let response_reference = response_tx.clone();
 
             // NOTE: node_clone must occur in the `while` loop (not outside of it), else the borrow checker
             // complains because the spawned thread takes ownership of it.
