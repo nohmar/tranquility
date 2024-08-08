@@ -2,6 +2,7 @@ mod message;
 mod node;
 
 use node::Node;
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use tokio::io::{stdin, AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
@@ -17,6 +18,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sy
 
     let node = Node {
         id: None,
+        unacknowledged_messages: Arc::new(Mutex::new(HashSet::new())),
         ..Default::default()
     };
 

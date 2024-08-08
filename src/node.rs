@@ -30,6 +30,7 @@ pub struct Node {
     pub topology: Vec<String>,
     pub current_message_id: u32,
     pub response_callbacks: HashMap<u32, ResponseCallback>,
+    pub unacknowledged_messages: Arc<Mutex<HashSet<u32>>>,
 }
 
 // Define the callback type and allow it to be displayed.
