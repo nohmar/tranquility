@@ -220,7 +220,7 @@ impl Node {
 
                                 // FIXME: Add a short delay before checking messages again. This
                                 // avoid blocking the thread with locks, causing net-timeouts.
-                                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
 
                                 eprintln!("Messages sent. Waiting for acknowledgements...");
                             }
