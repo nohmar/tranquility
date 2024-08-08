@@ -63,47 +63,52 @@ impl Node {
             // You can't clone in the spawned thread because the thread will own `node`.
             let node_clone = node.clone();
 
-            let result = task_tracker.spawn(async move {
-                let mut locked = node_clone.lock().unwrap();
-
-                let Ok(serialized_message) = serde_json::from_str(&from_stdin) else {
-                    return Err("Uh-oh, unable to parse that message.".to_string());
+            task_tracker.spawn(async move {
+                match Node::handle_from_stdin(node_clone, &from_stdin) {
+                    Ok(Some(stringified_response)) => {
+                        eprintln!("Sending message: {:?}", stringified_response);
+                        response_reference.send(stringified_response).await.unwrap();
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
+                        eprintln!(
+                            "Uh oh. Something went wrong handling stdin: {:?}, message: {:?}",
+                            err, &from_stdin
+                        );
+                    }
                 };
-
-                let id = locked.next_message_id();
-                let message = Message::new(serialized_message);
-
-                locked.run_callback(&message, id);
-
-                if let Some((response, _original_message)) = message.generate_response(&locked, id)
-                {
-                    let stringified_response =
-                        serde_json::to_string(&response).expect("Couldn't parse response.");
-
-                    return Ok(Some(stringified_response));
-                }
-
-                Ok(None)
             });
-
-            if let Ok(inner) = result.await {
-                match inner {
-                    Ok(message) => {
-                        if let Some(unwrapped_message) = message {
-                            response_reference
-                                .send(unwrapped_message)
-                                .await
-                                .expect("Could not send response.");
-                        }
-                    }
-                    Err(message) => {
-                        eprintln!("{}", message);
-                    }
-                }
-            }
         }
 
         eprintln!("{}", "Shutting down...");
+    }
+
+    pub fn handle_from_stdin(
+        node: Arc<Mutex<Node>>,
+        value: &String,
+    ) -> Result<Option<String>, String> {
+        let Ok(serialized_message) = serde_json::from_str(&value) else {
+            return Err("Uh-oh, unable to parse that message.".to_string());
+        };
+
+        let message = Message::new(serialized_message);
+
+        Node::run_callback(&node, &message);
+
+        // Lock the mutex after `run_callback`, or else you get a deadlock;
+        // `run_callback` locks the node.
+        let mut locked = node.lock().unwrap();
+
+        let id = locked.next_message_id();
+
+        if let Some((response, _original_message)) = message.generate_response(&locked, id) {
+            let stringified_response =
+                serde_json::to_string(&response).expect("Couldn't parse response.");
+
+            Ok(Some(stringified_response))
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn generate_uuid(&self, client_id: &String) -> u64 {
@@ -123,16 +128,18 @@ impl Node {
         self.current_message_id
     }
 
-    pub fn run_callback(&mut self, message: &MessageKind, next_message_id: u32) {
+    pub fn run_callback(mutex: &Arc<Mutex<Node>>, message: &MessageKind) {
+        let mut node = mutex.lock().unwrap();
+
         match message {
             MessageKind::Init(message) => {
                 if let MessageBody::Init(body) = &message.body {
-                    self.id = Some(body.node_id.to_owned());
+                    node.id = Some(body.node_id.to_owned());
                 }
             }
             MessageKind::Broadcast(message) => {
                 if let MessageBody::Broadcast(body) = &message.body {
-                    let is_message_seen = self.messages.contains(&body.message);
+                    let is_message_seen = node.messages.contains(&body.message);
 
                     if body.in_reply_to.is_some() {
                         if let Some(response_callback) =
@@ -190,19 +197,22 @@ impl Node {
                         }
                     } else {
                         // Log message to stderr.
-                        eprintln!("Message seen {:?}, do nothing.", message);
+                        eprintln!(
+                            "Message seen {:?} - acknowledging it, but do nothing.",
+                            message
+                        );
                     }
                 }
             }
             MessageKind::Topology(message) => {
                 if let MessageBody::Topology(body) = &message.body {
                     let body_topology = body.topology.to_owned();
-                    let node_id = self.id.to_owned().unwrap();
+                    let node_id = node.id.to_owned().unwrap();
 
                     if let Some(topology) = body_topology.get(&node_id) {
-                        self.topology = topology.to_vec();
+                        node.topology = topology.to_vec();
 
-                        eprintln!("My neighbors are: {:?}", self.topology);
+                        eprintln!("My neighbors are: {:?}", node.topology);
                     }
                 }
             }
