@@ -248,4 +248,12 @@ impl Node {
             MessageKind::Echo(_message) => (),
         }
     }
+
+    fn retry(node: &Arc<Mutex<Node>>) -> bool {
+        let node = node.lock().unwrap();
+        let messages = node.unacknowledged_messages.lock().unwrap();
+
+        eprintln!("Unacknowledged messages: {:?}", messages);
+        !messages.is_empty()
+    }
 }
