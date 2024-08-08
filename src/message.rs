@@ -16,6 +16,7 @@ pub enum MessageBody {
     Init(InitBody),
     Echo(EchoBody),
     Broadcast(BroadcastBody),
+    BroadcastOk(BroadcastOkBody),
     Topology(TopologyBody),
     Read(ReadBody),
     Generate(GenerateBody),
@@ -76,6 +77,7 @@ pub enum MessageKind {
     Invalid(Message),
     Generate(Message),
     Broadcast(Message),
+    BroadcastOk(Message),
     Read(Message),
     Topology(Message),
 }
@@ -146,12 +148,12 @@ pub struct BroadcastOkResponse {
     body: BroadcastOkBody,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct BroadcastOkBody {
     #[serde(rename(serialize = "type", deserialize = "type"))]
-    r#type: String,
-    msg_id: Option<u32>,
-    in_reply_to: u32,
+    pub r#type: String,
+    pub msg_id: Option<u32>,
+    pub in_reply_to: u32,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -199,6 +201,7 @@ impl Message {
             MessageBody::Echo(ref _body) => MessageKind::Echo(message),
             MessageBody::Generate(ref _body) => MessageKind::Generate(message),
             MessageBody::Broadcast(ref _body) => MessageKind::Broadcast(message),
+            MessageBody::BroadcastOk(ref _body) => MessageKind::BroadcastOk(message),
             MessageBody::Read(ref _body) => MessageKind::Read(message),
             MessageBody::Topology(ref _body) => MessageKind::Topology(message),
             _ => MessageKind::Invalid(message),
@@ -383,6 +386,7 @@ impl MessageKind {
                 }),
                 message,
             )),
+            MessageKind::BroadcastOk(_message) => None,
         };
     }
 }
