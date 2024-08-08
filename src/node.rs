@@ -137,6 +137,32 @@ impl Node {
                     node.id = Some(body.node_id.to_owned());
                 }
             }
+            MessageKind::BroadcastOk(message) => {
+                if message.dest != node.id.clone().unwrap() {
+                    eprintln!(
+                        "Skipping message because the destination is the same as node: {:?}",
+                        message
+                    );
+
+                    return;
+                }
+
+                if let MessageBody::BroadcastOk(body) = &message.body {
+                    if let Some(response_callback) =
+                        node.response_callbacks.remove(&body.in_reply_to)
+                    {
+                        let ResponseCallback(callback) = response_callback;
+                        callback();
+
+                        eprintln!("Broadcast Ok received for message: {:?}", body.in_reply_to);
+                    } else {
+                        eprintln!(
+                            "Skipping Broadcast OK callback because the in reply to is not found in callbacks: {:?}",
+                            message
+                        );
+                    }
+                }
+            }
             MessageKind::Broadcast(message) => {
                 if let MessageBody::Broadcast(body) = &message.body {
                     let is_message_seen = node.messages.contains(&body.message);
